@@ -1,22 +1,26 @@
 name: plant_disease_diagnosis
-description: "A new Flutter project."
+description: A Flutter app for diagnosing plant diseases using Plant.id API.
+
 publish_to: 'none'
-version: 0.1.0
+
+version: 1.0.0+1
 
 environment:
-  sdk: ^3.7.0
+  sdk: ">=2.17.0 <3.0.0"
 
 dependencies:
   flutter:
     sdk: flutter
-  http: ^1.3.0
-  image_picker: ^1.1.2
-  permission_handler: ^11.4.0
+  cupertino_icons: ^1.0.2
+  image_picker: ^0.8.7
+  http: ^0.13.5
+  permission_handler: ^10.2.0
+  shared_preferences: ^2.1.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^5.0.0
+  flutter_lints: ^2.0.0
 
 flutter:
   uses-material-design: true

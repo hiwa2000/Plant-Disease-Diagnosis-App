@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const PlantDiagnosisApp());
@@ -30,16 +31,48 @@ class HomePage extends StatefulWidget {
   const HomePage({Key? key}) : super(key: key);
 
   @override
-  State<HomePage> createState() => HomePageState();  // Changed from _HomePageState
+  State<HomePage> createState() => HomePageState();
 }
 
-// Changed from _HomePageState to HomePageState (removed the underscore)
 class HomePageState extends State<HomePage> {
   final ImagePicker _picker = ImagePicker();
   File? _imageFile;
   bool _isAnalyzing = false;
   Map<String, dynamic>? _diagnosisResult;
   String? _errorMessage;
+  String? _apiKey;
+  final TextEditingController _apiKeyController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _requestPermissions();
+    _loadApiKey();
+  }
+
+  @override
+  void dispose() {
+    _apiKeyController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadApiKey() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _apiKey = prefs.getString('plant_id_api_key');
+      if (_apiKey != null) {
+        _apiKeyController.text = _apiKey!;
+      }
+    });
+  }
+
+  Future<void> _saveApiKey(String apiKey) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('plant_id_api_key', apiKey);
+    setState(() {
+      _apiKey = apiKey;
+    });
+  }
 
   Future<void> _requestPermissions() async {
     Map<Permission, PermissionStatus> statuses = await [
@@ -55,13 +88,12 @@ class HomePageState extends State<HomePage> {
     }
   }
 
-  @override
-  void initState() {
-    super.initState();
-    _requestPermissions();
-  }
-
   Future<void> _getImage(ImageSource source) async {
+    if (_apiKey == null || _apiKey!.isEmpty) {
+      _showApiKeyDialog();
+      return;
+    }
+
     try {
       final XFile? pickedFile = await _picker.pickImage(
         source: source,
@@ -84,8 +116,55 @@ class HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _showApiKeyDialog() async {
+    return showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Plant.id API Key Required'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'To use this app, you need a Plant.id API key. You can get one by signing up at plant.id website.',
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _apiKeyController,
+                  decoration: const InputDecoration(
+                    labelText: 'API Key',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('Cancel'),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+            TextButton(
+              child: const Text('Save'),
+              onPressed: () {
+                if (_apiKeyController.text.isNotEmpty) {
+                  _saveApiKey(_apiKeyController.text);
+                  Navigator.of(context).pop();
+                }
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _analyzePlantDisease() async {
-    if (_imageFile == null) return;
+    if (_imageFile == null || _apiKey == null || _apiKey!.isEmpty) return;
 
     setState(() {
       _isAnalyzing = true;
@@ -93,29 +172,35 @@ class HomePageState extends State<HomePage> {
     });
 
     try {
-      // Replace with your actual plant disease recognition API
-      // This is a placeholder for demonstration purposes
-      final Uri apiUrl = Uri.parse('https://api.plantdisease.example.com/diagnose');
+      // Convert image to base64
+      List<int> imageBytes = await _imageFile!.readAsBytes();
+      String base64Image = base64Encode(imageBytes);
       
-      // Create a multipart request
-      var request = http.MultipartRequest('POST', apiUrl);
+      // Prepare request to Plant.id API
+      final Uri apiUrl = Uri.parse('https://api.plant.id/v2/identify');
       
-      // Add the image file
-      request.files.add(await http.MultipartFile.fromPath(
-        'image',
-        _imageFile!.path,
-      ));
+      // Create request body
+      var requestBody = {
+        'api_key': _apiKey,
+        'images': [base64Image],
+        'modifiers': ['crops_fast', 'similar_images', 'diseases'],
+        'plant_details': ['common_names', 'url', 'description', 'taxonomy', 'wiki_description'],
+        'disease_details': ['description', 'treatment', 'classification'],
+      };
 
       // Send the request
-      var response = await request.send();
+      var response = await http.post(
+        apiUrl,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(requestBody),
+      );
       
       // Process the response
       if (response.statusCode == 200) {
-        var responseData = await response.stream.bytesToString();
-        var decodedData = json.decode(responseData);
+        var decodedData = json.decode(response.body);
         
         setState(() {
-          _diagnosisResult = decodedData;
+          _diagnosisResult = _processApiResponse(decodedData);
           _isAnalyzing = false;
         });
       } else {
@@ -132,6 +217,100 @@ class HomePageState extends State<HomePage> {
     }
   }
 
+  // Helper function to process Plant.id API response
+  Map<String, dynamic> _processApiResponse(Map<String, dynamic> apiResponse) {
+    var result = <String, dynamic>{};
+    
+    try {
+      if (apiResponse['suggestions'] != null && apiResponse['suggestions'].isNotEmpty) {
+        var suggestion = apiResponse['suggestions'][0];
+        
+        // Basic plant info
+        result['plantName'] = suggestion['plant_name'] ?? 'Unknown Plant';
+        if (suggestion['plant_details'] != null && 
+            suggestion['plant_details']['common_names'] != null && 
+            suggestion['plant_details']['common_names'].isNotEmpty) {
+          result['plantName'] = suggestion['plant_details']['common_names'][0];
+        }
+        
+        result['confidence'] = suggestion['probability'] ?? 0.0;
+        
+        // Disease info
+        if (suggestion['is_plant_disease'] == true && suggestion['disease_details'] != null) {
+          result['diseaseName'] = suggestion['disease_details']['name'] ?? 'Unknown Disease';
+          result['treatments'] = _extractTreatments(suggestion['disease_details']);
+          result['moreInfo'] = suggestion['disease_details']['description'] ?? '';
+        } else {
+          // Check if there are any diseases listed
+          final List diseaseList = apiResponse['health_assessment']?['diseases'] ?? [];
+          if (diseaseList.isNotEmpty) {
+            final disease = diseaseList[0];
+            result['diseaseName'] = disease['name'] ?? 'Unknown Disease';
+            result['confidence'] = disease['probability'] ?? 0.0;
+            result['treatments'] = ['Keep the plant in a well-ventilated area', 
+                                    'Ensure proper watering', 
+                                    'Remove affected leaves',
+                                    'Consider appropriate fungicides if the condition worsens'];
+            result['moreInfo'] = disease['description'] ?? '';
+          } else {
+            result['diseaseName'] = 'No disease detected';
+            result['treatments'] = ['Your plant appears healthy',
+                                   'Continue regular care and monitoring'];
+            result['moreInfo'] = 'No signs of disease were detected in this plant. Regular care includes proper watering, adequate sunlight, and occasional fertilization.';
+          }
+        }
+      } else {
+        result['plantName'] = 'Unknown Plant';
+        result['diseaseName'] = 'Could not identify';
+        result['confidence'] = 0.0;
+        result['treatments'] = ['Try again with a clearer image',
+                               'Ensure good lighting',
+                               'Focus on affected areas of the plant'];
+        result['moreInfo'] = 'The plant could not be identified. Try taking a photo with better lighting and a clearer view of the plant features.';
+      }
+    } catch (e) {
+      print("Error processing API response: $e");
+      result['plantName'] = 'Error in processing';
+      result['diseaseName'] = 'Processing error';
+      result['confidence'] = 0.0;
+      result['treatments'] = ['Try again later'];
+      result['moreInfo'] = 'There was an error processing the response from the identification service.';
+    }
+    
+    return result;
+  }
+
+  List<String> _extractTreatments(Map<String, dynamic> diseaseDetails) {
+    List<String> treatments = [];
+    
+    if (diseaseDetails['treatment'] != null) {
+      if (diseaseDetails['treatment']['biological'] != null) {
+        treatments.add('Biological: ${diseaseDetails['treatment']['biological']}');
+      }
+      
+      if (diseaseDetails['treatment']['chemical'] != null) {
+        treatments.add('Chemical: ${diseaseDetails['treatment']['chemical']}');
+      }
+      
+      if (diseaseDetails['treatment']['prevention'] != null) {
+        treatments.add('Prevention: ${diseaseDetails['treatment']['prevention']}');
+      }
+    }
+    
+    // Default treatments if none found
+    if (treatments.isEmpty) {
+      treatments = [
+        'Isolate the affected plant',
+        'Remove and destroy affected parts',
+        'Ensure good air circulation',
+        'Avoid overhead watering',
+        'Consider appropriate fungicides or insecticides'
+      ];
+    }
+    
+    return treatments;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -139,6 +318,13 @@ class HomePageState extends State<HomePage> {
         title: const Text('Plant Disease Diagnosis'),
         backgroundColor: Colors.green,
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: _showApiKeyDialog,
+            tooltip: 'Set API Key',
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
@@ -235,7 +421,6 @@ class DiagnosisResultCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // This is a mock display - you'll need to adapt this to your API's response structure
     return Card(
       elevation: 4,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -255,7 +440,7 @@ class DiagnosisResultCard extends StatelessWidget {
             ),
             const SizedBox(height: 10),
             Text(
-              'Confidence: ${(diagnosis['confidence'] * 100).toStringAsFixed(1)}%',
+              'Confidence: ${((diagnosis['confidence'] ?? 0.0) * 100).toStringAsFixed(1)}%',
               style: const TextStyle(fontSize: 16),
             ),
             const SizedBox(height: 16),
@@ -290,7 +475,6 @@ class DiagnosisResultCard extends StatelessWidget {
                 icon: const Icon(Icons.info_outline),
                 label: const Text('Learn More'),
                 onPressed: () {
-                  // Navigate to a detail page or show a dialog with more information
                   showDialog(
                     context: context,
                     builder: (context) => AlertDialog(
