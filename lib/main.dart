@@ -17,6 +17,8 @@ class PlantDiagnosisApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Plant Disease Diagnosis',
+      debugShowCheckedModeBanner: false,// This line hides the debug banner
+
       theme: ThemeData(
         primarySwatch: Colors.green,
         visualDensity: VisualDensity.adaptivePlatformDensity,
